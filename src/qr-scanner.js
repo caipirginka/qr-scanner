@@ -142,7 +142,7 @@ export default class QrScanner {
             .catch(() => {
                 // We (probably) don't have a camera of the requested facing mode
                 facingMode = facingMode === 'environment' ? 'user' : 'environment';
-                return this._getCameraStream(); // throws if camera is not accessible (e.g. due to not https)
+                return this._getCameraStream(facingMode, true); // throws if camera is not accessible (e.g. due to not https)
             })
             .then(stream => {
                 // Try to determine the facing mode from the stream, otherwise use our guess. Note that the guess is not
