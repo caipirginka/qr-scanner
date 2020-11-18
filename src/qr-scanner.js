@@ -61,6 +61,18 @@ export default class QrScanner {
         this.$video.addEventListener('loadedmetadata', this._onLoadedMetaData);
         document.addEventListener('visibilitychange', this._onVisibilityChange);
 
+        // Retrieve and store the list of available devices
+        this._devices = [];
+        navigator.mediaDevices.enumerateDevices()
+            .then((devices) =>
+                devices.forEach((device) => {
+                    if (device.kind == "videoinput") {
+                        this._devices.push(device);
+                    }
+                })
+            )
+            .catch((error) => console.error(error));
+
         this._qrEnginePromise = QrScanner.createQrEngine();
     }
 
@@ -87,22 +99,22 @@ export default class QrScanner {
     }
 
     isFlashOn() {
-      return this._flashOn;
+        return this._flashOn;
     }
 
     /* async */
     toggleFlash() {
-      return this._setFlash(!this._flashOn);
+        return this._setFlash(!this._flashOn);
     }
 
     /* async */
     turnFlashOff() {
-      return this._setFlash(false);
+        return this._setFlash(false);
     }
 
     /* async */
     turnFlashOn() {
-      return this._setFlash(true);
+        return this._setFlash(true);
     }
 
     destroy() {
@@ -139,7 +151,10 @@ export default class QrScanner {
 
         let facingMode = this._preferredFacingMode;
         return this._getCameraStream(facingMode, true)
-            .catch(() => {
+            .catch((e) => {
+                console.log('_getCameraStream()', e);
+                alert('_getCameraStream()' + e);
+
                 // We (probably) don't have a camera of the requested facing mode
                 facingMode = facingMode === 'environment' ? 'user' : 'environment';
                 return this._getCameraStream(facingMode, true); // throws if camera is not accessible (e.g. due to not https)
@@ -151,6 +166,9 @@ export default class QrScanner {
                 this.$video.srcObject = stream;
                 this.$video.play();
                 this._setVideoMirror(facingMode);
+
+                // Store selected deviceId
+                this._deviceId = stream.getVideoTracks()[0].getCapabilities().deviceId;
             })
             .catch(e => {
                 this._active = false;
@@ -183,8 +201,42 @@ export default class QrScanner {
     }
 
     /* async */
-    static scanImage(imageOrFileOrUrl, scanRegion=null, qrEngine=null, canvas=null, fixedCanvasSize=false,
-                     alsoTryWithoutScanRegion=false) {
+    cycleCamera() {
+        if (!this.$video.srcObject)
+            return Promise.resolve(false);              // camera stream not already/still set
+
+        // Find index of current device inside the list of available devices
+        let deviceIndex = this._devices.findIndex((device) => device.deviceId == this._deviceId);
+        if (deviceIndex < 0)
+            return Promise.resolve(false);              // should never happen...
+
+        // Select next device in list of devices, rolling back to zero at the end
+        deviceIndex = deviceIndex < this._devices.length - 1 ? deviceIndex + 1 : 0;
+
+        //return this.useCamera(this._devices[deviceIndex].deviceId);          // Actually use selected camera
+
+        this.stop();
+        this._preferredDeviceId = this._devices[deviceIndex].deviceId;
+        this.$video.srcObject = null;               // force creation of a new stream
+        this.start();
+
+        return Promise.resolve(this._preferredDeviceId);
+    }
+
+    /* async */
+    useCamera(deviceId) {
+        if (!this.$video.srcObject)
+            return Promise.resolve(false);              // camera stream not already/still set
+
+        const track = this.$video.srcObject.getTracks()[0];
+
+        // Apply constraint with specified deviceId
+        return track.applyConstraints({ video: { deviceId: { exact: deviceId } } });
+    }
+
+    /* async */
+    static scanImage(imageOrFileOrUrl, scanRegion = null, qrEngine = null, canvas = null, fixedCanvasSize = false,
+        alsoTryWithoutScanRegion = false) {
         const gotExternalWorker = qrEngine instanceof Worker;
 
         let promise = Promise.all([
@@ -347,7 +399,7 @@ export default class QrScanner {
     }
 
     _getCameraStream(facingMode, exact = false) {
-        const constraintsToTry = [{
+        let constraintsToTry = [{
             width: { min: 1024 }
         }, {
             width: { min: 768 }
@@ -359,6 +411,10 @@ export default class QrScanner {
             }
             constraintsToTry.forEach(constraint => constraint.facingMode = facingMode);
         }
+
+        if (this._preferredDeviceId)
+            constraintsToTry = [{ deviceId: { exact: this._preferredDeviceId } }];
+
         return this._getMatchingCameraStream(constraintsToTry);
     }
 
@@ -384,7 +440,7 @@ export default class QrScanner {
 
     _setVideoMirror(facingMode) {
         // in user facing mode mirror the video to make it easier for the user to position the QR code
-        const scaleFactor = facingMode==='user'? -1 : 1;
+        const scaleFactor = facingMode === 'user' ? -1 : 1;
         this.$video.style.transform = 'scaleX(' + scaleFactor + ')';
     }
 
@@ -399,15 +455,15 @@ export default class QrScanner {
                 : null; // unknown
     }
 
-    static _drawToCanvas(image, scanRegion=null, canvas=null, fixedCanvasSize=false) {
+    static _drawToCanvas(image, scanRegion = null, canvas = null, fixedCanvasSize = false) {
         canvas = canvas || document.createElement('canvas');
-        const scanRegionX = scanRegion && scanRegion.x? scanRegion.x : 0;
-        const scanRegionY = scanRegion && scanRegion.y? scanRegion.y : 0;
-        const scanRegionWidth = scanRegion && scanRegion.width? scanRegion.width : image.width || image.videoWidth;
-        const scanRegionHeight = scanRegion && scanRegion.height? scanRegion.height : image.height || image.videoHeight;
+        const scanRegionX = scanRegion && scanRegion.x ? scanRegion.x : 0;
+        const scanRegionY = scanRegion && scanRegion.y ? scanRegion.y : 0;
+        const scanRegionWidth = scanRegion && scanRegion.width ? scanRegion.width : image.width || image.videoWidth;
+        const scanRegionHeight = scanRegion && scanRegion.height ? scanRegion.height : image.height || image.videoHeight;
         if (!fixedCanvasSize) {
-            canvas.width = scanRegion && scanRegion.downScaledWidth? scanRegion.downScaledWidth : scanRegionWidth;
-            canvas.height = scanRegion && scanRegion.downScaledHeight? scanRegion.downScaledHeight : scanRegionHeight;
+            canvas.width = scanRegion && scanRegion.downScaledWidth ? scanRegion.downScaledWidth : scanRegionWidth;
+            canvas.height = scanRegion && scanRegion.downScaledHeight ? scanRegion.downScaledHeight : scanRegionHeight;
         }
         const context = canvas.getContext('2d', { alpha: false });
         context.imageSmoothingEnabled = false; // gives less blurry images
@@ -428,7 +484,7 @@ export default class QrScanner {
         } else if (imageOrFileOrBlobOrUrl instanceof Image) {
             return QrScanner._awaitImageLoad(imageOrFileOrBlobOrUrl).then(() => imageOrFileOrBlobOrUrl);
         } else if (imageOrFileOrBlobOrUrl instanceof File || imageOrFileOrBlobOrUrl instanceof Blob
-            || imageOrFileOrBlobOrUrl instanceof URL || typeof(imageOrFileOrBlobOrUrl)==='string') {
+            || imageOrFileOrBlobOrUrl instanceof URL || typeof (imageOrFileOrBlobOrUrl) === 'string') {
             const image = new Image();
             if (imageOrFileOrBlobOrUrl instanceof File || imageOrFileOrBlobOrUrl instanceof Blob) {
                 image.src = URL.createObjectURL(imageOrFileOrBlobOrUrl);
@@ -449,7 +505,7 @@ export default class QrScanner {
     /* async */
     static _awaitImageLoad(image) {
         return new Promise((resolve, reject) => {
-            if (image.complete && image.naturalWidth!==0) {
+            if (image.complete && image.naturalWidth !== 0) {
                 // already loaded
                 resolve();
             } else {
